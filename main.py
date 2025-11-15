@@ -1,43 +1,32 @@
+from fastapi import FastAPI
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 import os
-from fastapi import FastAPI, Request
-from telegram import Bot, Update
-from telegram.ext import Dispatcher, CommandHandler, MessageHandler, Filters
-import httpx
-import asyncio
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-bot = Bot(token=BOT_TOKEN)
+TOKEN = os.getenv("BOT_TOKEN")
 
 app = FastAPI()
-dispatcher = Dispatcher(bot, None, workers=4, use_context=True)
 
+# Telegram bot
+bot_app = ApplicationBuilder().token(TOKEN).build()
 
-async def start(update, context):
-    await update.message.reply_text("Bot running successfully 🚀")
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Bot is working! 🚀")
 
+async def track(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Tracking feature coming soon 🔍")
 
-async def echo(update, context):
-    await update.message.reply_text(f"You said: {update.message.text}")
-
-
-dispatcher.add_handler(CommandHandler("start", start))
-dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, echo))
-
-
-@app.on_event("startup")
-async def startup():
-    await bot.set_webhook(f"{WEBHOOK_URL}/webhook")
-
-
-@app.post("/webhook")
-async def telegram_webhook(request: Request):
-    data = await request.json()
-    update = Update.de_json(data, bot)
-    dispatcher.process_update(update)
-    return {"ok": True}
+bot_app.add_handler(CommandHandler("start", start))
+bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, track))
 
 
 @app.get("/")
-async def home():
-    return {"status": "Bot Running ✔"}
+async def root():
+    return {"status": "running"}
+
+
+@app.post("/webhook")
+async def webhook(update: dict):
+    telegram_update = Update.de_json(update, bot_app.bot)
+    await bot_app.process_update(telegram_update)
+    return {"ok": True}
