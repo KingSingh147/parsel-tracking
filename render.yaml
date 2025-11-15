@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: india-post-tracking-bot
+    env: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python main.py"
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        value: 8599385484:AAHWUXw0JqW9c0i2ztfc1NZjqoJsVYWtgds
