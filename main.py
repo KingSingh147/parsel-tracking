@@ -1,54 +1,79 @@
 import os
 import requests
+from flask import Flask, request
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TOKEN = os.environ.get("BOT_TOKEN")
+WEBHOOK_URL = "https://parsel-tracking.onrender.com/webhook"
 
-def track_india_post(tracking_number):
-    api_url = "https://www.indiapost.gov.in/_layouts/15/dop.portal.tracking/TrackConsignment.aspx/GetConsignmentDetails"
-    headers = {"Content-Type": "application/json"}
-    data = {"barCode": tracking_number}
+INDIAN_TRACKING_API = "https://indiantracking.in/api/track?courier=india-post&awb="
 
-    res = requests.post(api_url, json=data, headers=headers)
-    result = res.json()
+app = Flask(__name__)
+bot_app = None
 
-    if not result or "d" not in result or not result["d"]:
-        return f"❌ Tracking number *{tracking_number}* not found."
 
-    last_event = result["d"][0]  # latest update
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("📦 Send any India Post tracking number to check parcel status.")
 
-    status = last_event.get("Event", "Status unavailable")
-    location = last_event.get("Office", "Location unavailable")
-    date = last_event.get("EventDate", "")
-    time = last_event.get("EventTime", "")
-    datetime = f"{date} {time}".strip()
 
-    return f"""
-📦 *India Post Tracking Update*
+async def track_parcel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    tracking = update.message.text.strip()
+
+    # Call the tracking API
+    api_url = INDIAN_TRACKING_API + tracking
+    response = requests.get(api_url).json()
+
+    if response.get("success") is False:
+        await update.message.reply_text("❌ Tracking number not found.")
+        return
+
+    data = response.get("data", {})
+    status = data.get("current_status", "Not available")
+    location = data.get("current_location", "Not available")
+    datetime = data.get("current_datetime", "Not available")
+
+    msg = f"""📦 *India Post Tracking*
 
 🟢 *Status:* {status}
 📍 *Location:* {location}
-🕒 *Time:* {datetime}
+🕒 *Date/Time:* {datetime}
 
-🔍 Tracking: `{tracking_number}`
+🔍 *Tracking:* `{tracking}`
 """
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📮 Send an India Post tracking number to get live status.")
+    await update.message.reply_markdown(msg)
 
-async def handle_tracking(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    tracking_number = update.message.text.strip()
-    await update.message.reply_text("⏳ Fetching live data... please wait...")
 
-    result = track_india_post(tracking_number)
-    await update.message.reply_markdown(result)
+@app.post("/webhook")
+def webhook():
+    data = request.get_json()
+    bot_app.update_queue.put(data)
+    return "ok", 200
+
+
+@app.get("/")
+def home():
+    return "Bot is running via webhook 🚀"
+
+
+async def set_webhook(application):
+    await application.bot.set_webhook(url=WEBHOOK_URL)
+
 
 def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_tracking))
-    app.run_polling()
+    global bot_app
+    application = Application.builder().token(TOKEN).build()
+
+    # Telegram handlers
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, track_parcel))
+
+    bot_app = application
+    application.create_task(set_webhook(application))
+
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+
 
 if __name__ == "__main__":
     main()
