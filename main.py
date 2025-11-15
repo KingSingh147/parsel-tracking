@@ -1,33 +1,29 @@
 import os
 import logging
 import requests
+import uvicorn
 from fastapi import FastAPI, Request
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
-import uvicorn
 
-# -----------------------------
-# Environment Variables
-# -----------------------------
 TOKEN = os.getenv("BOT_TOKEN")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # Example: https://parsel-tracking.onrender.com
 INDIAN_TRACKING_API = "https://indiantracking.in/api/track?courier=india-post&awb="
 
 logging.basicConfig(level=logging.INFO)
 
-# FastAPI app
 app = FastAPI()
 
-# Telegram Bot
 telegram_app = (
     Application.builder()
     .token(TOKEN)
     .build()
 )
 
-# -----------------------------
-# Bot Handlers
-# -----------------------------
+# ------------------------
+# BOT HANDLERS
+# ------------------------
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📦 Send any India Post tracking number to check parcel status.")
 
@@ -55,16 +51,27 @@ async def track_parcel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 telegram_app.add_handler(CommandHandler("start", start))
 telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, track_parcel))
 
-# -----------------------------
-# Webhook Setup
-# -----------------------------
+
+# ------------------------
+# START BOT + WEBHOOK
+# ------------------------
 @app.on_event("startup")
 async def startup():
-    if WEBHOOK_URL:
-        await telegram_app.bot.set_webhook(f"{WEBHOOK_URL}/webhook")
-        print("🔗 Webhook connected!")
+    await telegram_app.initialize()
+    await telegram_app.start()
+    await telegram_app.bot.set_webhook(f"{WEBHOOK_URL}/webhook")
+    print("🚀 Bot started & webhook set")
 
 
+@app.on_event("shutdown")
+async def shutdown():
+    await telegram_app.stop()
+    await telegram_app.shutdown()
+
+
+# ------------------------
+# WEBHOOK ENDPOINT
+# ------------------------
 @app.post("/webhook")
 async def webhook_listener(request: Request):
     data = await request.json()
@@ -75,11 +82,8 @@ async def webhook_listener(request: Request):
 
 @app.get("/")
 async def home():
-    return {"Bot": "Running via FastAPI Webhook 🚀"}
+    return {"status": "Bot running via webhook 🔥"}
 
 
-# -----------------------------
-# Start Uvicorn on Render
-# -----------------------------
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
