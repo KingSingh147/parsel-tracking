@@ -16,11 +16,23 @@ from telegram.ext import (
 )
 
 # -----------------------
-# CONFIGURATION
+# CONFIG
 # -----------------------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # example: https://parsel-tracking.onrender.com
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # e.g. https://parsel-tracking.onrender.com
 PORT = int(os.getenv("PORT", 10000))
+
+if not BOT_TOKEN:
+    raise RuntimeError("❌ BOT_TOKEN is missing — set it in Render Environment Variables")
+
+if not WEBHOOK_URL:
+    raise RuntimeError("❌ WEBHOOK_URL is missing — set it in Render Environment Variables")
+
+app = FastAPI()
+telegram_app = None
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 MYSPEEDPOST_ENDPOINTS = [
     "https://myspeedpost.com/track?num={}",
@@ -31,16 +43,11 @@ MYSPEEDPOST_ENDPOINTS = [
     "https://myspeedpost.com/?tracking={}",
 ]
 
-FETCH_TIMEOUT = 40  # seconds
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-app = FastAPI()
-telegram_app = Application.builder().token(BOT_TOKEN).build()
+FETCH_TIMEOUT = 40
 
 
 # -----------------------
-# Parse myspeedpost HTML
+# PARSER
 # -----------------------
 def parse_myspeedpost_html(html: str) -> Optional[dict]:
     soup = BeautifulSoup(html, "lxml")
@@ -70,34 +77,25 @@ def parse_myspeedpost_html(html: str) -> Optional[dict]:
                 history.append(ln)
 
     if latest or history:
-        return {
-            "status": latest.get("status"),
-            "location": latest.get("location"),
-            "datetime": latest.get("datetime"),
-            "history": history,
-        }
+        return {**latest, "history": history}
     return None
 
 
 # -----------------------
-# Async fetch
+# FETCH
 # -----------------------
 async def fetch_myspeedpost(tracking: str) -> Optional[dict]:
     async with httpx.AsyncClient(timeout=FETCH_TIMEOUT, follow_redirects=True) as client:
         for ep in MYSPEEDPOST_ENDPOINTS:
-            url = ep.format(tracking)
             try:
-                logger.info("Trying endpoint %s", url)
-                r = await client.get(url)
+                r = await client.get(ep.format(tracking))
                 if r.status_code != 200:
                     continue
 
-                # Try HTML
                 parsed = parse_myspeedpost_html(r.text)
                 if parsed:
                     return parsed
 
-                # JSON fallback
                 if "application/json" in r.headers.get("content-type", ""):
                     j = r.json()
                     if isinstance(j, dict):
@@ -113,59 +111,60 @@ async def fetch_myspeedpost(tracking: str) -> Optional[dict]:
 
 
 # -----------------------
-# BOT COMMANDS
+# BOT HANDLERS
 # -----------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📦 Send your India Post tracking number to get live updates.")
+    await update.message.reply_text("📦 Send your tracking number to get India Post live updates.")
 
 
 async def track(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tracking = update.message.text.upper().replace(" ", "")
-    ack = await update.message.reply_text("🔍 Fetching live India Post tracking...\n⏳ Please wait 20–35 sec.")
+    ack = await update.message.reply_text("🔍 Fetching India Post tracking...\n⏳ 20–35 sec...")
 
     result = await fetch_myspeedpost(tracking)
     if not result:
-        await ack.edit_text("❌ Tracking number not found.\nCheck format like: `EZ123456789IN`", parse_mode="Markdown")
+        await ack.edit_text("❌ Invalid tracking number.\nFormat: `EZ123456789IN`", parse_mode="Markdown")
         return
 
-    status = result.get("status") or "Unknown"
-    location = result.get("location") or "Unknown"
-    dt = result.get("datetime") or "Unknown"
-    history = result.get("history") or []
+    status = result.get("status", "Unknown")
+    location = result.get("location", "Unknown")
+    dt = result.get("datetime", "Unknown")
+    hist = result.get("history", [])
 
     msg = (
-        f"📦 *SpeedPost / India Post Tracking*\n\n"
-        f"🔹 *Tracking No:* `{tracking}`\n\n"
-        f"🔸 *Current Status:* *{status}*\n"
+        f"📦 *SpeedPost Tracking*\n\n"
+        f"🔹 *Tracking:* `{tracking}`\n"
+        f"🔸 *Status:* *{status}*\n"
         f"📍 *Location:* {location}\n"
-        f"🕒 *Date & Time:* {dt}\n\n"
+        f"🕒 *Updated:* {dt}\n\n"
     )
 
-    if history:
-        msg += "📜 *Recent Activity:*\n" + "\n".join([f"{i+1}. {h}" for i, h in enumerate(history[:5])]) + "\n\n"
+    if hist:
+        msg += "📜 *Recent Activity:*\n" + "\n".join([f"{i+1}. {h}" for i, h in enumerate(hist[:5])]) + "\n\n"
 
-    msg += "🔎 _If info looks incomplete, try again after a minute._"
+    msg += "🔎 _If incomplete, retry after 1 min._"
 
     await ack.edit_text(msg, parse_mode="Markdown")
 
 
-telegram_app.add_handler(CommandHandler("start", start))
-telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, track))
-
-
 # -----------------------
-# LIFE CYCLE: required to avoid crash
+# BOOT / WEBHOOK
 # -----------------------
 @app.on_event("startup")
-async def start_bot():
+async def startup():
+    global telegram_app
+    telegram_app = Application.builder().token(BOT_TOKEN).build()
+    telegram_app.add_handler(CommandHandler("start", start))
+    telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, track))
+
     await telegram_app.initialize()
     await telegram_app.start()
     await telegram_app.bot.set_webhook(f"{WEBHOOK_URL}/webhook")
-    logger.info("Webhook set: %s/webhook", WEBHOOK_URL)
+    logger.info("Webhook active")
 
 
 @app.on_event("shutdown")
-async def stop_bot():
+async def shutdown():
     await telegram_app.stop()
     await telegram_app.shutdown()
 
@@ -179,5 +178,5 @@ async def webhook_listener(request: Request):
 
 
 @app.get("/")
-async def root():
-    return {"status": "Bot running"}
+async def home():
+    return {"status": "Bot Running ✔️"}
