@@ -3,14 +3,15 @@ import requests
 from flask import Flask, request
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+import asyncio
 
 TOKEN = os.environ.get("BOT_TOKEN")
-WEBHOOK_URL = "https://parsel-tracking.onrender.com/webhook"
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL")  # example: https://parsel-tracking.onrender.com
 
 INDIAN_TRACKING_API = "https://indiantracking.in/api/track?courier=india-post&awb="
 
 app = Flask(__name__)
-bot_app = None
+telegram_app = None
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -19,10 +20,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def track_parcel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tracking = update.message.text.strip()
-
-    # Call the tracking API
     api_url = INDIAN_TRACKING_API + tracking
-    response = requests.get(api_url).json()
+
+    try:
+        response = requests.get(api_url, timeout=10).json()
+    except:
+        await update.message.reply_text("⚠ Error connecting to tracking server. Try later.")
+        return
 
     if response.get("success") is False:
         await update.message.reply_text("❌ Tracking number not found.")
@@ -41,38 +45,40 @@ async def track_parcel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 🔍 *Tracking:* `{tracking}`
 """
-
     await update.message.reply_markdown(msg)
 
 
 @app.post("/webhook")
 def webhook():
-    data = request.get_json()
-    bot_app.update_queue.put(data)
-    return "ok", 200
+    update = request.get_json()
+    telegram_app.update_queue.put_nowait(update)
+    return "ok"
 
 
 @app.get("/")
 def home():
-    return "Bot is running via webhook 🚀"
-
-
-async def set_webhook(application):
-    await application.bot.set_webhook(url=WEBHOOK_URL)
+    return "Bot is running 🚀"
 
 
 def main():
-    global bot_app
-    application = Application.builder().token(TOKEN).build()
+    global telegram_app
 
-    # Telegram handlers
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, track_parcel))
+    telegram_app = Application.builder().token(TOKEN).build()
 
-    bot_app = application
-    application.create_task(set_webhook(application))
+    # handlers
+    telegram_app.add_handler(CommandHandler("start", start))
+    telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, track_parcel))
 
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+    # set webhook before starting run_webhook
+    asyncio.get_event_loop().run_until_complete(
+        telegram_app.bot.set_webhook(f"{WEBHOOK_URL}/webhook")
+    )
+
+    telegram_app.run_webhook(
+        listen="0.0.0.0",
+        port=int(os.environ.get("PORT", 10000)),
+        webhook_url=f"{WEBHOOK_URL}/webhook"
+    )
 
 
 if __name__ == "__main__":
