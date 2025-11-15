@@ -6,7 +6,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 import asyncio
 
 TOKEN = os.environ.get("BOT_TOKEN")
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL")  # example: https://parsel-tracking.onrender.com
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL")  # https://parsel-tracking.onrender.com
 
 INDIAN_TRACKING_API = "https://indiantracking.in/api/track?courier=india-post&awb="
 
@@ -15,33 +15,35 @@ telegram_app = None
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📦 Send any India Post tracking number to check parcel status.")
+    await update.message.reply_text(
+        "📮 Send an India Post tracking number to get live parcel status."
+    )
 
 
 async def track_parcel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tracking = update.message.text.strip()
-    api_url = INDIAN_TRACKING_API + tracking
+    api = INDIAN_TRACKING_API + tracking
 
     try:
-        response = requests.get(api_url, timeout=10).json()
+        r = requests.get(api, timeout=10).json()
     except:
-        await update.message.reply_text("⚠ Error connecting to tracking server. Try later.")
+        await update.message.reply_text("⚠ Tracking server offline. Try later.")
         return
 
-    if response.get("success") is False:
+    if not r.get("success"):
         await update.message.reply_text("❌ Tracking number not found.")
         return
 
-    data = response.get("data", {})
-    status = data.get("current_status", "Not available")
-    location = data.get("current_location", "Not available")
-    datetime = data.get("current_datetime", "Not available")
+    d = r.get("data", {})
+    status = d.get("current_status", "Not available")
+    location = d.get("current_location", "Not available")
+    dt = d.get("current_datetime", "Not available")
 
     msg = f"""📦 *India Post Tracking*
 
 🟢 *Status:* {status}
 📍 *Location:* {location}
-🕒 *Date/Time:* {datetime}
+🕒 *Date/Time:* {dt}
 
 🔍 *Tracking:* `{tracking}`
 """
@@ -50,13 +52,13 @@ async def track_parcel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @app.post("/webhook")
 def webhook():
-    update = request.get_json()
-    telegram_app.update_queue.put_nowait(update)
+    upd = request.get_json()
+    telegram_app.update_queue.put_nowait(upd)
     return "ok"
 
 
 @app.get("/")
-def home():
+def root():
     return "Bot is running 🚀"
 
 
@@ -65,11 +67,10 @@ def main():
 
     telegram_app = Application.builder().token(TOKEN).build()
 
-    # handlers
     telegram_app.add_handler(CommandHandler("start", start))
     telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, track_parcel))
 
-    # set webhook before starting run_webhook
+    # Set webhook before starting
     asyncio.get_event_loop().run_until_complete(
         telegram_app.bot.set_webhook(f"{WEBHOOK_URL}/webhook")
     )
