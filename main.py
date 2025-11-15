@@ -22,7 +22,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # e.g. https://parsel-tracking.onrender.com
 PORT = int(os.getenv("PORT", 10000))
 
-# endpoints to try (myspeedpost variants)
+# myspeedpost endpoints (variants to try)
 MYSPEEDPOST_ENDPOINTS = [
     "https://myspeedpost.com/track?num={}",
     "https://myspeedpost.com/track?number={}",
@@ -33,7 +33,7 @@ MYSPEEDPOST_ENDPOINTS = [
 ]
 
 # timeouts
-FETCH_TIMEOUT = 40  # seconds
+FETCH_TIMEOUT = 40  # seconds (max wait for external site)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -50,65 +50,59 @@ def parse_myspeedpost_html(html: str) -> Optional[dict]:
     """
     Try to extract latest status, location and datetime from myspeedpost HTML.
     Returns dict {status, location, datetime, history(list)} or None if not found.
-    We'll look for common keywords and table/rows.
     """
     soup = BeautifulSoup(html, "lxml")
     text = soup.get_text(separator="\n").strip()
-
-    # quick heuristics first: look for common words
-    # 1) Find lines that contain words like "Status", "Location", "Date", "Time", "Delivered", "Out for"
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-    # try to find a "latest" block by scanning lines for keywords
+
     latest = {}
+    # Heuristics: look for nearby keywords and values
     for i, ln in enumerate(lines):
         low = ln.lower()
         if "status" in low and i + 1 < len(lines):
-            latest['status'] = lines[i + 1]
+            latest["status"] = lines[i + 1]
         if "location" in low and i + 1 < len(lines):
-            latest['location'] = lines[i + 1]
+            latest["location"] = lines[i + 1]
         if ("date" in low or "time" in low) and i + 1 < len(lines):
-            # combine date/time if possible
-            latest['datetime'] = lines[i + 1]
+            latest.setdefault("datetime", lines[i + 1])
 
-    # If that failed, attempt more targeted searches in soup
-    if not latest.get('status'):
-        # look for elements with 'status' in class or id
+    # Class/id based fallback
+    if not latest.get("status"):
         el = soup.find(class_=lambda c: c and "status" in c.lower()) or soup.find(id=lambda i: i and "status" in i.lower())
         if el:
-            latest['status'] = el.get_text(strip=True)
+            latest["status"] = el.get_text(strip=True)
 
-    if not latest.get('location'):
+    if not latest.get("location"):
         el = soup.find(class_=lambda c: c and "location" in c.lower()) or soup.find(id=lambda i: i and "location" in i.lower())
         if el:
-            latest['location'] = el.get_text(strip=True)
+            latest["location"] = el.get_text(strip=True)
 
-    if not latest.get('datetime'):
+    if not latest.get("datetime"):
         el = soup.find(class_=lambda c: c and ("date" in c.lower() or "time" in c.lower()))
         if el:
-            latest['datetime'] = el.get_text(strip=True)
+            latest["datetime"] = el.get_text(strip=True)
 
-    # Attempt to extract history rows if available (table or list)
+    # Extract history if present (table rows)
     history = []
     table = soup.find("table")
     if table:
         for tr in table.find_all("tr"):
             cols = [td.get_text(" ", strip=True) for td in tr.find_all(["td", "th"])]
-            if cols:
-                history.append(" • ".join(cols))
+            if cols and any(c.strip() for c in cols):
+                history.append(" • ".join([c for c in cols if c]))
     else:
-        # fallback: find recurring patterns like "DD Mon YYYY - Location - Status"
+        # fallback: add lines that look like events
         for ln in lines:
             if any(k in ln.lower() for k in ("delivered", "out for", "received", "bag", "dispatched", "booking", "arrived")):
                 history.append(ln)
 
-    # If we have at least one piece of data, return
     if latest or history:
         return {
             "status": latest.get("status"),
             "location": latest.get("location"),
             "datetime": latest.get("datetime"),
             "history": history,
-            "raw_text_snippet": "\n".join(lines[:40])  # small snippet fallback
+            "raw_text_snippet": "\n".join(lines[:60]),
         }
     return None
 
@@ -118,58 +112,54 @@ def parse_myspeedpost_html(html: str) -> Optional[dict]:
 # -----------------------
 async def fetch_myspeedpost(tracking: str) -> Optional[dict]:
     """
-    Try multiple myspeedpost endpoints (some sites use different params).
-    This waits up to FETCH_TIMEOUT seconds for a response.
-    Returns parsed dict or None.
+    Try multiple myspeedpost endpoints. Returns parsed dict or None.
     """
     async with httpx.AsyncClient(timeout=FETCH_TIMEOUT, follow_redirects=True) as client:
         last_exc = None
         for endpoint in MYSPEEDPOST_ENDPOINTS:
             url = endpoint.format(tracking)
             try:
-                logger.info("Trying myspeedpost endpoint: %s", url)
+                logger.info("Trying endpoint: %s", url)
                 resp = await client.get(url)
-                # many sites render content with JS, but myspeedpost worked for you in browser
                 if resp.status_code != 200:
-                    logger.info("Endpoint %s returned status %s", url, resp.status_code)
+                    logger.info("Endpoint %s returned %s", url, resp.status_code)
                     continue
                 parsed = parse_myspeedpost_html(resp.text)
                 if parsed:
-                    logger.info("Parsed myspeedpost successfully from %s", url)
+                    logger.info("Parsed result from %s", url)
                     return parsed
-                # fallback: sometimes the page contains JSON within scripts
-                if "application/json" in resp.headers.get("content-type", ""):
+                # Try JSON body fallback
+                ctype = resp.headers.get("content-type", "")
+                if "application/json" in ctype:
                     try:
                         j = resp.json()
-                        # try to find keys
-                        data = {}
                         if isinstance(j, dict):
-                            # naive extraction
-                            data['status'] = j.get('status') or j.get('current_status') or j.get('message')
-                            data['location'] = j.get('location') or j.get('current_location')
-                            data['datetime'] = j.get('datetime') or j.get('time')
-                            data['history'] = j.get('history') or j.get('events') or []
-                            if data['status'] or data['history']:
+                            data = {}
+                            data["status"] = j.get("status") or j.get("current_status") or j.get("message")
+                            data["location"] = j.get("location") or j.get("current_location")
+                            data["datetime"] = j.get("datetime") or j.get("time")
+                            data["history"] = j.get("history") or j.get("events") or []
+                            if data.get("status") or data.get("history"):
                                 return data
                     except Exception:
                         pass
-                # otherwise continue to next endpoint
+                # no useful data, try next
             except Exception as e:
                 logger.exception("Error fetching %s: %s", url, e)
                 last_exc = e
-                # try next endpoint
                 await asyncio.sleep(0.3)
-        # nothing found
         if last_exc:
-            logger.warning("All myspeedpost endpoints failed; last exception: %s", last_exc)
+            logger.warning("All endpoints failed; last exception: %s", last_exc)
     return None
 
 
 # -----------------------
-# Bot handlers
+# Bot handlers (selected styles)
 # -----------------------
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📦 Send your India Post tracking number (e.g. EE123456789IN) and I'll fetch the latest status.")
+    await update.message.reply_text(
+        "📦 Send your India Post tracking number (e.g. EE123456789IN) and I'll fetch live status (may take ~20–35s)."
+    )
 
 
 async def track_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -178,34 +168,40 @@ async def track_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Please send a tracking number.")
         return
 
-    # Acknowledge and tell user we may take time
+    # Instant acknowledgement (Style 2)
     ack = await update.message.reply_text(
-        "⏳ Tracking started — this can take up to 35 seconds. Please wait..."
+        "📦 Tracking your SpeedPost parcel...\n⏳ Please wait 20–35 seconds while we fetch live India Post data."
     )
 
-    # fetch the tracking info (async)
+    # fetch data (async) - do not block event loop beyond timeout
     try:
         parsed = await fetch_myspeedpost(tracking)
     except Exception as e:
-        logger.exception("Unexpected error during tracking fetch: %s", e)
+        logger.exception("Unexpected error while fetching: %s", e)
         parsed = None
 
+    # If no result -> Format B invalid message
     if not parsed:
-        await ack.edit_text(
-            "❌ Could not retrieve tracking details from myspeedpost. The service might be slow or unavailable.\n\n"
-            "You can try again, or open the official site: https://www.indiapost.gov.in/"
-        )
+        try:
+            await ack.edit_text(
+                "❌ Tracking number not found.\n\nMake sure it looks like this: `EZ123456789IN`",
+                parse_mode="Markdown"
+            )
+        except Exception:
+            await update.message.reply_text(
+                "❌ Tracking number not found.\n\nMake sure it looks like this: EZ123456789IN"
+            )
         return
 
-    # Build a beautiful message (B: last update + location + time)
+    # Build beautiful final message
     status = parsed.get("status") or "Status not available"
     location = parsed.get("location") or "Location not available"
-    dt = parsed.get("datetime") or "Date/Time not available"
+    dt = parsed.get("datetime") or "Date & Time not available"
 
-    # Short history preview (up to 4 items)
+    # Short history preview (max 5)
     history = parsed.get("history") or []
     history_lines = []
-    for i, h in enumerate(history[:4], start=1):
+    for i, h in enumerate(history[:5], start=1):
         history_lines.append(f"{i}. {h}")
 
     pretty_msg = (
@@ -221,11 +217,10 @@ async def track_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     pretty_msg += "🔎 _If details look incomplete, try again after a minute (the server may still be updating)._"
 
-    # edit the acknowledgment to final message
+    # Edit ack to final
     try:
         await ack.edit_text(pretty_msg, parse_mode="Markdown")
     except Exception:
-        # fallback to simple reply if edit fails
         await update.message.reply_markdown(pretty_msg)
 
 
@@ -239,10 +234,10 @@ telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, track_h
 # -----------------------
 @app.on_event("startup")
 async def on_startup():
-    # initialize and start telegram application properly
+    # Initialize & start the PTB Application
     await telegram_app.initialize()
     await telegram_app.start()
-    # set webhook
+    # Set webhook if WEBHOOK_URL present
     if WEBHOOK_URL:
         await telegram_app.bot.set_webhook(f"{WEBHOOK_URL}/webhook")
         logger.info("Webhook set to %s/webhook", WEBHOOK_URL)
@@ -271,7 +266,7 @@ async def root():
 
 
 # -----------------------
-# Local run guard (uvicorn)
+# Local run (uvicorn)
 # -----------------------
 if __name__ == "__main__":
     import uvicorn
