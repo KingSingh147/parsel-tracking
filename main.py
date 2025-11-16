@@ -3,6 +3,10 @@ import os
 import logging
 import asyncio
 from typing import Optional, List, Dict
+import httpx
+import json
+from telegram.ext import MessageHandler, filters
+
 
 import httpx
 from bs4 import BeautifulSoup
@@ -16,6 +20,8 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
+
+
 
 # -----------------------
 # CONFIG
@@ -108,6 +114,25 @@ def parse_myspeedpost_html(html: str) -> Optional[Dict]:
 # -----------------------
 # Async fetch
 # -----------------------
+
+async def track_speedpost(tracking_no: str):
+    url = f"https://www.indiapost.gov.in/_layouts/15/IPSAPI/Tracking/TrackConsignment.aspx?consignment={tracking_no}"
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.get(url)
+
+    data = json.loads(response.text)
+    if not data.get("consignment"):
+        return None
+
+    item = data["consignment"][0]
+    return {
+        "number": tracking_no,
+        "status": item.get("Status", "Not available"),
+        "location": item.get("OfficeName", "Not available"),
+        "time": item.get("EventDate", "Not available")
+    }
+
+
 async def fetch_myspeedpost(tracking: str) -> Optional[Dict]:
     """
     Attempt each possible endpoint. Return parsed dict or None.
@@ -208,6 +233,30 @@ async def track_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await ack.edit_text(msg, parse_mode="Markdown")
     except Exception:
         await update.message.reply_markdown(msg)
+
+async def handle_tracking(update, context):
+    tracking_no = update.message.text.strip()
+
+    if len(tracking_no) < 8:
+        await update.message.reply_text("❌ Please enter a valid tracking number.")
+        return
+
+    await update.message.reply_text("⏳ Fetching live tracking from India Post…")
+
+    result = await track_speedpost(tracking_no)
+
+    if not result:
+        await update.message.reply_text("❌ Invalid tracking number or India Post server busy. Try again after 1 minute.")
+        return
+
+    reply = (
+        "📦 *SpeedPost / India Post Tracking*\n\n"
+        f"🔹 *Tracking No:* `{result['number']}`\n\n"
+        f"🔸 *Current Status:* {result['status']}\n"
+        f"📍 *Location:* {result['location']}\n"
+        f"🕒 *Date & Time:* {result['time']}\n"
+    )
+    await update.message.reply_markdown(reply)
 
 
 # -----------------------
