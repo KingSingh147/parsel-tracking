@@ -234,28 +234,32 @@ async def track_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         await update.message.reply_markdown(msg)
 
-async def handle_tracking(update, context):
-    tracking_no = update.message.text.strip()
+async def track_speedpost(tracking_no: str):
+    url = f"https://www.indiapost.gov.in/_layouts/15/IPSAPI/Tracking/TrackConsignment.aspx?consignment={tracking_no}"
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.get(url)
 
-    if len(tracking_no) < 8:
-        await update.message.reply_text("❌ Please enter a valid tracking number.")
-        return
+    # India Post sometimes blocks API or returns HTML → avoid JSON crash
+    try:
+        data = response.json()
+    except Exception:
+        return None
 
-    await update.message.reply_text("⏳ Fetching live tracking from India Post…")
+    if not isinstance(data, dict):
+        return None
 
-    result = await track_speedpost(tracking_no)
+    cons = data.get("consignment")
+    if not cons or not isinstance(cons, list):
+        return None
 
-    if not result:
-        await update.message.reply_text("❌ Invalid tracking number or India Post server busy. Try again after 1 minute.")
-        return
+    item = cons[0]
+    return {
+        "number": tracking_no,
+        "status": item.get("Status", "Not available"),
+        "location": item.get("OfficeName", "Not available"),
+        "time": item.get("EventDate", "Not available")
+    }
 
-    reply = (
-        "📦 *SpeedPost / India Post Tracking*\n\n"
-        f"🔹 *Tracking No:* `{result['number']}`\n\n"
-        f"🔸 *Current Status:* {result['status']}\n"
-        f"📍 *Location:* {result['location']}\n"
-        f"🕒 *Date & Time:* {result['time']}\n"
-    )
     await update.message.reply_markdown(reply)
 
 
