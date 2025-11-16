@@ -32,12 +32,12 @@ PORT = int(os.getenv("PORT", "10000"))
 
 # Myspeedpost variants (try multiple)
 MYSPEEDPOST_ENDPOINTS = [
-    "https://myspeedpost.com/track?num={}",
-    "https://myspeedpost.com/track?number={}",
-    "https://myspeedpost.com/track/{}",
-    "https://myspeedpost.com/?num={}",
-    "https://myspeedpost.com/?awb={}",
-    "https://myspeedpost.com/?tracking={}",
+    "https://myspeedpost.com/track?num={}&sync=true",
+    "https://myspeedpost.com/track?number={}&sync=true",
+    "https://myspeedpost.com/track/{}&sync=true",
+    "https://myspeedpost.com/?num={}&sync=true",
+    "https://myspeedpost.com/?awb={}&sync=true",
+    "https://myspeedpost.com/?tracking={}&sync=true",
 ]
 
 FETCH_TIMEOUT = 40  # seconds
