@@ -278,7 +278,8 @@ async def startup_event():
 
     # register handlers
     telegram_app.add_handler(CommandHandler("start", start_cmd))
-    telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_tracking))
+    telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, track_handler))
+
 
 
     # initialize & start
